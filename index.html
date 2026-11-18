@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Posture Monitor — ESP32 &amp; MPU6050</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Bar -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M12 3V21" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.5 2.5" opacity="0.45" />
+            <path d="M12 20C12 15.5 13.8 11.2 16 5.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
+            <circle cx="14.5" cy="9.5" r="2.2" fill="currentColor" />
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>Posture Monitor</h1>
+          <span class="brand-sub">ESP32 · MPU6050 · 115200 baud</span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="conn-pill" id="connPill" data-state="disconnected">
+          <span class="conn-dot"></span>
+          <span id="connLabel">Not connected</span>
+        </div>
+
+        <button type="button" class="btn btn-ghost" id="btnHardware" title="Wiring &amp; setup notes">
+          Wiring
+        </button>
+
+        <button type="button" class="btn btn-secondary" id="btnDemo">
+          Demo Mode
+        </button>
+
+        <button type="button" class="btn btn-primary" id="btnConnect">
+          Connect ESP32
+        </button>
+      </div>
+    </header>
+
+    <!-- Web Serial browser notice (hidden if supported) -->
+    <div class="notice-banner hidden" id="serialWarning" role="alert">
+      <strong>Web Serial isn't available in this browser.</strong>
+      Use Chrome or Edge on desktop to connect directly to your ESP32 over USB, or try <strong>Demo Mode</strong> to preview the dashboard.
+    </div>
+
+    <!-- Main Dashboard -->
+    <main class="dashboard">
+      <!-- Left Column: Live Posture & Sensor Visual -->
+      <section class="panel posture-panel" aria-label="Live Posture State">
+        <!-- State Header -->
+        <div class="state-banner" id="stateBanner" data-status="idle">
+          <div class="state-banner-top">
+            <div class="state-title-group">
+              <span class="state-dot" aria-hidden="true"></span>
+              <h2 id="stateTitle">Waiting for sensor data</h2>
+            </div>
+            <span class="motor-badge" id="motorBadge" data-active="false">
+              <span class="motor-led"></span>
+              GPIO 12: OFF
+            </span>
+          </div>
+
+          <p class="state-desc" id="stateDesc">
+            Plug in your ESP32 and click <strong>Connect ESP32</strong>, or start <strong>Demo Mode</strong> to simulate live readings.
+          </p>
+
+          <!-- 5-second slouch hold progress bar -->
+          <div class="hold-progress-wrap" id="holdProgressWrap">
+            <div class="hold-progress-meta">
+              <span id="holdLabel">Slouch duration</span>
+              <span class="mono" id="holdTime">0.0s / 5.0s</span>
+            </div>
+            <div class="hold-track">
+              <div class="hold-fill" id="holdFill"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Back Tilt SVG Visualizer -->
+        <div class="visualizer-stage">
+          <div class="stage-meta-top">
+            <span class="stage-caption">Back-mount tilt profile</span>
+            <span class="calibration-tag mono" id="calibrationTag">Baseline 0.0°</span>
+          </div>
+
+          <svg
+            class="posture-svg"
+            id="postureSvg"
+            viewBox="0 0 320 235"
+            role="img"
+            aria-label="Live back angle tilt visualization"
+          >
+            <defs>
+              <linearGradient id="slouchZoneGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#C43628" stop-opacity="0.16" />
+                <stop offset="100%" stop-color="#C43628" stop-opacity="0.03" />
+              </linearGradient>
+              <linearGradient id="recoveryZoneGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#1B7A56" stop-opacity="0.14" />
+                <stop offset="100%" stop-color="#1B7A56" stop-opacity="0.03" />
+              </linearGradient>
+            </defs>
+
+            <!-- Base floor / seat reference -->
+            <line x1="56" y1="196" x2="264" y2="196" stroke="#DFDCD4" stroke-width="1.5" stroke-linecap="round" />
+
+            <!-- Protractor arc centered at hip pivot (145, 196), radius 148 -->
+            <path
+              d="M 50 83 A 148 148 0 0 1 258 101"
+              fill="none"
+              stroke="#E6E3DB"
+              stroke-width="1.25"
+            />
+
+            <!-- +3° Recovery Zone wedge (0° to 3° amplified visually 2.2x for clarity -> 0° to 6.6°) -->
+            <path
+              id="recoveryWedge"
+              d="M 145 196 L 145 48 A 148 148 0 0 1 162 49 Z"
+              fill="url(#recoveryZoneGrad)"
+            />
+
+            <!-- +10° Slouch Trigger Zone wedge (22° visual to 60° visual) -->
+            <path
+              id="slouchWedge"
+              d="M 145 196 L 200 59 A 148 148 0 0 1 273 122 Z"
+              fill="url(#slouchZoneGrad)"
+            />
+
+            <!-- Vertical 0° Baseline plumb line -->
+            <line
+              x1="145" y1="38"
+              x2="145" y2="196"
+              stroke="#9C9FA4"
+              stroke-width="1.25"
+              stroke-dasharray="4 4"
+            />
+            <text x="145" y="29" text-anchor="middle" class="svg-label">0° baseline</text>
+
+            <!-- +10° threshold reference ray (drawn at 22° visual angle for readability) -->
+            <line
+              x1="145" y1="196"
+              x2="200" y2="59"
+              stroke="#C97A16"
+              stroke-width="1.2"
+              stroke-dasharray="3 3"
+              opacity="0.85"
+            />
+            <text x="206" y="54" text-anchor="start" class="svg-label svg-label-warn">+10° trigger</text>
+
+            <!-- Animated torso / spine group rotating around pivot (145, 196) -->
+            <g id="spineGroup" transform="rotate(0 145 196)">
+              <!-- Subtle torso silhouette behind spine -->
+              <path
+                d="M 134 196 L 132 104 C 132 90 138 82 145 82 C 152 82 158 90 158 104 L 156 196 Z"
+                fill="#ECEAE3"
+                stroke="#D5D1C7"
+                stroke-width="1.2"
+              />
+              <!-- Head silhouette -->
+              <circle cx="145" cy="60" r="15" fill="#ECEAE3" stroke="#D5D1C7" stroke-width="1.2" />
+
+              <!-- Spine centerline -->
+              <line
+                id="spineLine"
+                x1="145" y1="196"
+                x2="145" y2="86"
+                stroke="#1B7A56"
+                stroke-width="3.5"
+                stroke-linecap="round"
+              />
+
+              <!-- MPU6050 + Haptic motor sensor module mounted on upper back -->
+              <g id="sensorNode" transform="translate(145, 114)">
+                <!-- Vibration ripple rings (animated via CSS when vibrating) -->
+                <circle class="haptic-ring ring-1" cx="0" cy="0" r="11" />
+                <circle class="haptic-ring ring-2" cx="0" cy="0" r="18" />
+                <rect x="-7" y="-10" width="14" height="20" rx="3" fill="#181A1B" />
+                <circle id="sensorLed" cx="0" cy="0" r="2.6" fill="#4ADE80" />
+              </g>
+            </g>
+
+            <!-- Pivot dot -->
+            <circle cx="145" cy="196" r="5" fill="#FFFFFF" stroke="#181A1B" stroke-width="2" />
+
+            <!-- Live angle pill inside SVG bottom-right -->
+            <g transform="translate(212, 168)">
+              <rect x="0" y="0" width="92" height="24" rx="6" fill="#F4F3EF" stroke="#E3E0D8" />
+              <text id="svgAngleReadout" x="46" y="16" text-anchor="middle" class="svg-readout">0.0° dev</text>
+            </g>
+          </svg>
+
+          <!-- Threshold legend -->
+          <div class="threshold-strip">
+            <div class="threshold-item">
+              <span class="swatch swatch-good"></span>
+              <span>Recovery &lt; 3.0°</span>
+            </div>
+            <div class="threshold-item">
+              <span class="swatch swatch-warn"></span>
+              <span>Slouch &gt; 10.0° (5s)</span>
+            </div>
+            <div class="threshold-item">
+              <span class="swatch swatch-alert"></span>
+              <span>Motor latch</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Primary 3 Serial Values -->
+        <div class="telemetry-grid">
+          <div class="metric-box metric-hero">
+            <span class="metric-label">Signed Deviation</span>
+            <div class="metric-value mono" id="valDeviation">0.00<span class="unit">°</span></div>
+            <span class="metric-sub" id="subDeviation">smoothed − baseline</span>
+          </div>
+
+          <div class="metric-box">
+            <span class="metric-label">Current Angle</span>
+            <div class="metric-value mono" id="valCurrent">0.00<span class="unit">°</span></div>
+            <span class="metric-sub">EMA filtered (α=0.15)</span>
+          </div>
+
+          <div class="metric-box">
+            <span class="metric-label">Baseline Angle</span>
+            <div class="metric-value mono" id="valBaseline">0.00<span class="unit">°</span></div>
+            <span class="metric-sub">GPIO 4 calibration</span>
+          </div>
+        </div>
+
+        <!-- Demo Mode Controls (shown only in Demo Mode) -->
+        <div class="demo-controls hidden" id="demoControls">
+          <div class="demo-header">
+            <span class="demo-title">Simulator Controls</span>
+            <label class="toggle-inline">
+              <input type="checkbox" id="chkAutoSim" checked />
+              <span>Auto posture cycle</span>
+            </label>
+          </div>
+          <div class="slider-row">
+            <label for="simAngleSlider" class="slider-label">
+              Raw tilt angle <span class="mono" id="simSliderVal">0.0°</span>
+            </label>
+            <input
+              type="range"
+              id="simAngleSlider"
+              min="-10"
+              max="28"
+              step="0.5"
+              value="2"
+            />
+          </div>
+          <div class="demo-btn-row">
+            <button type="button" class="btn btn-secondary btn-sm" id="btnSimCalibrate">
+              Press Calibration Button (GPIO 4)
+            </button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btnSimSlouch">
+              Simulate Slouch (+15°)
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right Column: Real-time Chart, Session Stats, Raw Serial Monitor -->
+      <div class="right-column">
+        <!-- Live Chart Panel -->
+        <section class="panel chart-panel" aria-label="Deviation History Chart">
+          <div class="panel-header">
+            <div>
+              <h3>Deviation Over Time</h3>
+              <p class="panel-sub">Last 30 seconds · 10 Hz sample window</p>
+            </div>
+            <div class="panel-controls">
+              <button type="button" class="btn btn-ghost btn-sm" id="btnPauseChart">Pause</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="btnClearChart">Clear</button>
+            </div>
+          </div>
+
+          <div class="chart-canvas-wrap">
+            <canvas id="deviationChart"></canvas>
+          </div>
+
+          <div class="chart-footer">
+            <div class="chart-legend">
+              <span><i class="leg-line leg-dev"></i>Signed Deviation</span>
+              <span><i class="leg-line leg-thresh"></i>+10° Slouch Trigger</span>
+              <span><i class="leg-line leg-rec"></i>+3° Recovery Line</span>
+              <span><i class="leg-line leg-cal"></i>Calibration Event</span>
+            </div>
+            <span class="sample-rate mono" id="sampleRate">0.0 Hz</span>
+          </div>
+        </section>
+
+        <!-- Session Stats Strip -->
+        <section class="stats-row" aria-label="Session Statistics">
+          <div class="stat-card">
+            <span class="stat-label">Upright Posture</span>
+            <strong class="stat-val mono" id="statUpright">--%</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Haptic Alerts</span>
+            <strong class="stat-val mono" id="statAlerts">0</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Peak Deviation</span>
+            <strong class="stat-val mono" id="statPeak">0.0°</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Session Time</span>
+            <strong class="stat-val mono" id="statTime">00:00</strong>
+          </div>
+          <div class="stat-card stat-action">
+            <span class="stat-label" id="mpuStatusLabel">MPU6050: Idle</span>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnExportCsv" disabled>
+              Export CSV
+            </button>
+          </div>
+        </section>
+
+        <!-- Raw Serial Monitor Panel -->
+        <section class="panel serial-panel" aria-label="ESP32 Serial Output">
+          <div class="panel-header">
+            <div class="serial-title-row">
+              <h3>Serial Monitor</h3>
+              <span class="baud-tag mono">115200</span>
+            </div>
+            <div class="panel-controls">
+              <label class="toggle-inline">
+                <input type="checkbox" id="chkAutoScroll" checked />
+                <span>Auto-scroll</span>
+              </label>
+              <button type="button" class="btn btn-ghost btn-sm" id="btnClearLog">Clear</button>
+            </div>
+          </div>
+
+          <div class="serial-output mono" id="serialOutput" role="log" aria-live="off">
+            <div class="log-line log-muted">
+              <span class="log-ts">--:--:--</span>
+              <span class="log-msg">Ready. Connect ESP32 via USB (115200 baud) or launch Demo Mode.</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Firmware config: Trigger &gt; 10.0° for 5.0s · Recovery &lt; 3.0° · Loop 100ms</span>
+      <span>Tip: Close Arduino IDE Serial Monitor before connecting here.</span>
+    </footer>
+  </div>
+
+  <!-- Hardware & Wiring Reference Modal -->
+  <div class="modal-backdrop hidden" id="hardwareModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modalTitle">ESP32 Hardware &amp; Connection Guide</h3>
+        <button type="button" class="btn-icon" id="btnCloseModal" aria-label="Close">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="modal-intro">
+          This dashboard reads the exact USB Serial stream produced by your ESP32 sketch at <strong>115200 baud</strong> — no extra Wi-Fi or firmware changes required.
+        </p>
+
+        <table class="pinout-table">
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>ESP32 Pin</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>MPU6050 SDA</td>
+              <td class="mono">GPIO 21</td>
+              <td>I²C data line</td>
+            </tr>
+            <tr>
+              <td>MPU6050 SCL</td>
+              <td class="mono">GPIO 22</td>
+              <td>I²C clock line</td>
+            </tr>
+            <tr>
+              <td>Haptic Motor</td>
+              <td class="mono">GPIO 12</td>
+              <td>Latches HIGH after 5s &gt; 10°</td>
+            </tr>
+            <tr>
+              <td>Calibrate Button</td>
+              <td class="mono">GPIO 4</td>
+              <td>INPUT_PULLUP (other leg to GND)</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="modal-tips">
+          <h4>Quick Connection Checklist</h4>
+          <ol>
+            <li>Upload <code>posture_monitor.ino</code> to your ESP32.</li>
+            <li><strong>Close the Arduino IDE Serial Monitor</strong> (only one app can access the COM port at once).</li>
+            <li>Open this page in Chrome or Edge and click <strong>Connect ESP32</strong>.</li>
+            <li>Select your ESP32 USB-to-Serial port (e.g. CP210x or CH340).</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
